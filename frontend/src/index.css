@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+@theme {
+  --color-neon-red: #ff2d2d;
+  --color-neon-red-glow: #ff4444;
+  --color-neon-orange: #ff8c00;
+  --color-neon-green: #00ff88;
+  --color-neon-green-glow: #39ff9e;
+  --color-bg-dark: #0f0f12;
+  --color-bg-card: #1a1a1f;
+  --color-border: #2a2a32;
+  --font-display: "Space Grotesk", system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--color-bg-dark);
+  color: #e2e2e8;
+  font-family: var(--font-display);
+}
+
+#root {
+  min-height: 100vh;
+}
