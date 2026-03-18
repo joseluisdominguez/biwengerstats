@@ -6,6 +6,7 @@ Reglas: Pos 17 → 2€, Pos 9-16 → 1€, resto → 0€.
 
 import os
 import sys
+import time
 from typing import Optional
 
 # --- Configuración (variables de entorno o constantes) ---
@@ -19,6 +20,7 @@ BIWENGER_API_BASE = "https://biwenger.as.com/api/v2"
 
 # Nombre de la pestaña en el Sheet
 SHEET_TAB_HISTORIAL = "Historial_Jornadas"
+SHEET_TAB_CLAUSULAS = "Clausulas"
 
 # API pública para listar jornadas (sin auth). Competición por defecto.
 BIWENGER_PUBLIC_API_BASE = "https://cf.biwenger.com/api/v2"
@@ -210,13 +212,239 @@ def get_existing_jornada_ids_in_sheet() -> set[int]:
     return existing
 
 
+def get_all_players_from_historial_sheet() -> list[str]:
+    """Lee la columna Jugador (C) del Sheet Historial y devuelve la lista única de jugadores (respaldo si la API falla)."""
+    import gspread
+    from google.oauth2.service_account import Credentials
+
+    scope = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive.file",
+    ]
+    creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "credentials.json")
+    creds = Credentials.from_service_account_file(creds_path, scopes=scope)
+    client = gspread.authorize(creds)
+    sheet = client.open_by_key(GOOGLE_SHEET_ID)
+    worksheet = sheet.worksheet(SHEET_TAB_HISTORIAL)
+    # Columna C = Jugador (índice 3 en gspread)
+    col_c = worksheet.col_values(3)
+    seen = set()
+    names = []
+    for val in col_c:
+        name = (val or "").strip()
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    return sorted(names)
+
+
+# --- Clausulas: board API, agregación y escritura en sheet ---
+
+# Ventana relevante: solo cláusulas en los últimos 7 días limitan hacer/recibir (2 por 7 días).
+SECONDS_PER_DAY = 86400
+CLAUSULAS_DAYS_WINDOW = 7
+
+
+def fetch_league_board_all() -> list[dict]:
+    """
+    Obtiene todos los ítems del board de la liga con paginación (offset/limit=50).
+    Para de paginar cuando encuentra ítems con date < (now - 7 días): lo anterior ya no afecta
+    al límite de 2 cláusulas por 7 días.
+    Retorna lista de objetos con al menos 'type', 'content', 'date'.
+    """
+    import requests
+    import certifi
+
+    headers = _biwenger_headers()
+    skip_verify = os.environ.get("BIWENGER_SKIP_SSL_VERIFY", "").strip().lower() in ("1", "true", "yes")
+    verify_ssl = False if skip_verify else certifi.where()
+    cutoff = int(time.time()) - (CLAUSULAS_DAYS_WINDOW * SECONDS_PER_DAY)
+    base_url = f"{BIWENGER_API_BASE}/league/{BIWENGER_LEAGUE_ID}/board"
+    all_items: list[dict] = []
+    offset = 0
+    limit = 50
+
+    while True:
+        resp = requests.get(
+            base_url,
+            params={"offset": offset, "limit": limit},
+            headers=headers,
+            timeout=30,
+            verify=verify_ssl,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        items = data.get("data") if isinstance(data, dict) else []
+        if not isinstance(items, list):
+            break
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            ts = item.get("date")
+            if isinstance(ts, (int, float)) and ts < cutoff:
+                # Ítem fuera de ventana: no añadirlo y no pedir más páginas
+                return all_items
+            all_items.append(item)
+        if len(items) < limit:
+            break
+        offset += limit
+
+    return all_items
+
+
+def build_clausulas_data(
+    board_items: list[dict],
+) -> tuple[dict[str, list[int]], dict[str, list[int]], list[str]]:
+    """
+    Filtra type=transfer y content[].type=clause; agrega por jugador las fechas de hacer y recibir.
+    Devuelve (hacer, recibir, jugadores_ordenados) con como máximo 2 timestamps por jugador en cada lado.
+    """
+    hacer: dict[str, list[int]] = {}
+    recibir: dict[str, list[int]] = {}
+
+    for item in board_items:
+        if item.get("type") != "transfer":
+            continue
+        content = item.get("content") or []
+        parent_date = item.get("date")
+        if not isinstance(parent_date, (int, float)):
+            continue
+        ts = int(parent_date)
+        for c in content:
+            if not isinstance(c, dict) or c.get("type") != "clause":
+                continue
+            from_name = (c.get("from") or {}).get("name") or ""
+            to_name = (c.get("to") or {}).get("name") or ""
+            # to = quien hace la cláusula (límite para volver a hacer); from = quien la recibe (límite para recibir más)
+            if to_name:
+                hacer.setdefault(to_name, []).append(ts)
+            if from_name:
+                recibir.setdefault(from_name, []).append(ts)
+
+    def take_two_desc(l: list[int]) -> list[int]:
+        return sorted(l, reverse=True)[:2]
+
+    for d in (hacer, recibir):
+        for k in d:
+            d[k] = take_two_desc(d[k])
+
+    all_names = sorted(set(hacer.keys()) | set(recibir.keys()))
+    return hacer, recibir, all_names
+
+
+def write_clausulas_sheet(
+    hacer: dict[str, list[int]],
+    recibir: dict[str, list[int]],
+    jugadores: list[str],
+) -> None:
+    """Escribe la pestaña Clausulas: fila 1 = jugadores, filas 2-5 = Fecha 1/2 hacer, Fecha 1/2 recibir."""
+    import gspread
+    from google.oauth2.service_account import Credentials
+    from datetime import datetime, timezone
+
+    scope = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive.file",
+    ]
+    creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "credentials.json")
+    creds = Credentials.from_service_account_file(creds_path, scopes=scope)
+    client = gspread.authorize(creds)
+    sheet = client.open_by_key(GOOGLE_SHEET_ID)
+
+    try:
+        worksheet = sheet.worksheet(SHEET_TAB_CLAUSULAS)
+    except Exception:
+        worksheet = sheet.add_worksheet(title=SHEET_TAB_CLAUSULAS, rows=6, cols=max(len(jugadores) + 1, 2))
+
+    def ts_to_str(ts: int) -> str:
+        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d/%m/%Y %H:%M")
+
+    row_labels = ["Jugador", "Fecha 1 recibir", "Fecha 2 recibir", "Fecha 1 hacer", "Fecha 2 hacer"]
+    num_cols = max(len(jugadores) + 1, 2)
+    matrix = []
+    matrix.append([row_labels[0]] + jugadores)
+    for row_idx, label in enumerate(row_labels[1:], start=2):
+        row = [label]
+        for j in jugadores:
+            if label == "Fecha 1 hacer":
+                vals = hacer.get(j, [])
+                row.append(ts_to_str(vals[0]) if len(vals) >= 1 else "")
+            elif label == "Fecha 2 hacer":
+                vals = hacer.get(j, [])
+                row.append(ts_to_str(vals[1]) if len(vals) >= 2 else "")
+            elif label == "Fecha 1 recibir":
+                vals = recibir.get(j, [])
+                row.append(ts_to_str(vals[0]) if len(vals) >= 1 else "")
+            else:
+                vals = recibir.get(j, [])
+                row.append(ts_to_str(vals[1]) if len(vals) >= 2 else "")
+        matrix.append(row)
+
+    range_str = f"A1:{_col_letter(num_cols)}{len(matrix)}"
+    worksheet.update(values=matrix, range_name=range_str, value_input_option="USER_ENTERED")
+    print(f"Sheet '{SHEET_TAB_CLAUSULAS}' actualizado: {len(jugadores)} jugadores.")
+
+
+def _col_letter(n: int) -> str:
+    """1 -> A, 2 -> B, ..., 27 -> AA."""
+    s = ""
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s or "A"
+
+
+def get_all_league_players() -> list[str]:
+    """Obtiene la lista de los 17 jugadores de la liga desde la última jornada disputada."""
+    competition = os.environ.get("BIWENGER_COMPETITION", "la-liga").strip()
+    first_id = os.environ.get("BIWENGER_FIRST_ROUND_ID")
+    first_round_id = int(first_id) if first_id and str(first_id).isdigit() else None
+    try:
+        completed_ids = get_completed_round_ids(competition_slug=competition, first_round_id=first_round_id)
+    except Exception:
+        return []
+    if not completed_ids:
+        return []
+    last_round_id = completed_ids[-1]
+    result = get_round_standings(last_round_id)
+    standings = result.get("standings") or []
+    names = [s["name"] for s in standings if s.get("name")]
+    return sorted(names)
+
+
+def run_clausulas() -> None:
+    """Obtiene el board, filtra cláusulas, agrega por jugador (2 hacer + 2 recibir) y escribe la pestaña Clausulas."""
+    try:
+        board_items = fetch_league_board_all()
+    except Exception as e:
+        print(f"Error obteniendo el board de la liga: {e}")
+        sys.exit(1)
+    hacer, recibir, jugadores_from_clauses = build_clausulas_data(board_items)
+    # Lista completa: jugadores de la liga (API última jornada) + los que salen en cláusulas; si la API falla, respaldo desde el sheet Historial
+    jugadores_api = get_all_league_players()
+    if jugadores_api:
+        jugadores = sorted(set(jugadores_api) | set(jugadores_from_clauses))
+    else:
+        jugadores_sheet = get_all_players_from_historial_sheet()
+        jugadores = sorted(set(jugadores_sheet) | set(jugadores_from_clauses)) if jugadores_sheet else jugadores_from_clauses
+    if not jugadores:
+        print("No se encontraron jugadores (API ni Sheet). La pestaña se actualizará vacía.")
+    write_clausulas_sheet(hacer, recibir, jugadores)
+
+
 def run(round_id: Optional[int] = None) -> None:
     """
     Flujo principal.
+    - Si el primer argumento es 'clausulas' o '--clausulas': solo rellena la pestaña Clausulas y termina.
     - Si se pasa un ID de jornada (JORNADA=... o argumento): solo esa jornada.
     - Si no se pasa nada: obtiene todas las jornadas completadas, omite las ya en el Sheet,
       y vuelca el resto (todas las jornadas pendientes de registrar).
+    Uso: python bot.py | python bot.py <ID_jornada> | python bot.py clausulas
     """
+    if len(sys.argv) > 1 and str(sys.argv[1]).strip().lower() in ("clausulas", "--clausulas"):
+        run_clausulas()
+        return
+
     if round_id is None:
         round_id_str = os.environ.get("JORNADA") or (sys.argv[1] if len(sys.argv) > 1 else None)
         if round_id_str and str(round_id_str).strip().lower() not in ("all", "todas", ""):

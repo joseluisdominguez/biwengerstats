@@ -15,6 +15,8 @@ import {
 const CSV_HISTORIAL =
   import.meta.env.VITE_CSV_HISTORIAL ||
   "https://docs.google.com/spreadsheets/d/TU_SHEET_ID/export?format=csv&gid=0";
+// CSV de la pestaña Clausulas (opcional): fila 1 = jugadores, filas 2-5 = Fecha 1/2 hacer, Fecha 1/2 recibir
+const CSV_CLAUSULAS = import.meta.env.VITE_CSV_CLAUSULAS || "";
 
 function parseNum(val) {
   if (val === "" || val == null) return 0;
@@ -54,10 +56,94 @@ function fetchCsv(url) {
     });
 }
 
+// Formato del sheet: DD/MM/YYYY HH:mm (en UTC)
+function parseClausulaDateUTC(str) {
+  if (!str || !String(str).trim()) return null;
+  const s = String(str).trim();
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const [, day, month, year, hour, min] = m;
+  const ms = Date.UTC(parseInt(year, 10), parseInt(month, 10) - 1, parseInt(day, 10), parseInt(hour, 10), parseInt(min, 10));
+  const d = new Date(ms);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+function add7Days(date) {
+  const out = new Date(date);
+  out.setDate(out.getDate() + 7);
+  return out;
+}
+/** Formatea la fecha en la zona horaria y locale del cliente */
+function formatDateLocal(date) {
+  return date.toLocaleString(undefined, {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+function ClausulaCell({ value, now }) {
+  if (!value || !String(value).trim()) {
+    return <span className="text-[#00ff88]" aria-hidden>✓</span>;
+  }
+  const parsed = parseClausulaDateUTC(value);
+  const freeAt = parsed ? add7Days(parsed) : null;
+  const isFree = freeAt && freeAt.getTime() < now;
+  return (
+    <>
+      {parsed ? formatDateLocal(parsed) : value}
+      {freeAt && (
+        <span className="text-gray-500 text-xs ml-1">(libre el {formatDateLocal(freeAt)})</span>
+      )}
+      {isFree && (
+        <>
+          {" "}
+          <span className="text-[#00ff88]" aria-hidden>✓</span>
+        </>
+      )}
+    </>
+  );
+}
+
+function fetchClausulasCsv(url) {
+  return fetch(url)
+    .then((r) => r.text())
+    .then((text) => {
+      const result = Papa.parse(text, { header: false, skipEmptyLines: false });
+      const rows = result.data || [];
+      if (rows.length < 5) return [];
+      const row0 = rows[0] || [];
+      const row1 = rows[1] || [];
+      const row2 = rows[2] || [];
+      const row3 = rows[3] || [];
+      const row4 = rows[4] || [];
+      const out = [];
+      for (let col = 1; col < row0.length; col++) {
+        const jugador = String(row0[col] ?? "").trim();
+        if (!jugador) continue;
+        out.push({
+          Jugador: jugador,
+          Fecha1Recibir: String(row1[col] ?? "").trim(),
+          Fecha2Recibir: String(row2[col] ?? "").trim(),
+          Fecha1Hacer: String(row3[col] ?? "").trim(),
+          Fecha2Hacer: String(row4[col] ?? "").trim(),
+        });
+      }
+      return out;
+    });
+}
+
 export default function App() {
   const [historial, setHistorial] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [clausulasData, setClausulasData] = useState([]);
+  const [clausulasLoading, setClausulasLoading] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     setLoading(true);
@@ -66,6 +152,18 @@ export default function App() {
       .then((data) => setHistorial(Array.isArray(data) ? data : []))
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (!CSV_CLAUSULAS || CSV_CLAUSULAS.includes("TU_")) {
+      setClausulasData([]);
+      return;
+    }
+    setClausulasLoading(true);
+    fetchClausulasCsv(CSV_CLAUSULAS)
+      .then((data) => setClausulasData(Array.isArray(data) ? data : []))
+      .catch(() => setClausulasData([]))
+      .finally(() => setClausulasLoading(false));
   }, []);
 
   const normalizedHistorial = useMemo(() => {
@@ -540,6 +638,45 @@ export default function App() {
             </div>
           </section>
         </div>
+
+        {/* Tabla Cláusulas (datos del sheet Clausulas) */}
+        {(CSV_CLAUSULAS && !CSV_CLAUSULAS.includes("TU_")) && (
+          <section className="mt-6 bg-[#1a1a1f] border border-[#2a2a32] rounded-xl overflow-hidden shadow-lg p-4 w-full">
+            <h2 className="text-lg font-semibold mb-4 text-gray-200">
+              Cláusulas por jugador (últimas fechas hacer/recibir)
+            </h2>
+            {clausulasLoading ? (
+              <p className="text-gray-500 text-sm">Cargando cláusulas…</p>
+            ) : clausulasData.length === 0 ? (
+              <p className="text-gray-500 text-sm">No hay datos de cláusulas o la URL no está configurada.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-gray-400 border-b border-[#2a2a32]">
+                      <th className="text-left py-3 px-4">Jugador</th>
+                      <th className="text-left py-3 px-4">Clausula 1 hacer</th>
+                      <th className="text-left py-3 px-4">Clausula 2 hacer</th>
+                      <th className="text-left py-3 px-4">Clausula 1 recibir</th>
+                      <th className="text-left py-3 px-4">Clausula 2 recibir</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {clausulasData.map((r) => (
+                      <tr key={r.Jugador} className="border-b border-[#2a2a32]/60 hover:bg-white/5">
+                        <td className="py-2.5 px-4 font-medium">{r.Jugador}</td>
+                        <td className="py-2.5 px-4 text-gray-300"><ClausulaCell value={r.Fecha1Hacer} now={now} /></td>
+                        <td className="py-2.5 px-4 text-gray-300"><ClausulaCell value={r.Fecha2Hacer} now={now} /></td>
+                        <td className="py-2.5 px-4 text-gray-300"><ClausulaCell value={r.Fecha1Recibir} now={now} /></td>
+                        <td className="py-2.5 px-4 text-gray-300"><ClausulaCell value={r.Fecha2Recibir} now={now} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
       </main>
     </div>
   );

@@ -39,3 +39,19 @@ El bot usa el **ID de jornada** (ej. 4484). Para listar todos los IDs de jornada
 - En la respuesta, `data.next.id` es el ID de la siguiente jornada. Iterando desde el ID de la Jornada 1 (4484) puedes obtener todos los IDs.
 
 En el bot hay una función helper `get_completed_round_ids(competition_slug="la-liga", first_round_id=4484)` que hace esta iteración y devuelve la lista de IDs; puedes usarla desde un script para ejecutar el bot sobre varias jornadas.
+
+---
+
+## Pestaña: `Clausulas`
+
+Rellenada por el bot con **`python bot.py clausulas`** (solo esta pestaña; no toca Historial_Jornadas). Obtiene las transferencias tipo cláusula del board de la liga (API paginada) y guarda por jugador las **2 fechas más recientes** de “hacer” y “2 de “recibir” (ventana de 7 días).
+
+| Fila | Columna A   | Columnas B, C, … |
+|------|-------------|------------------|
+| 1    | Jugador     | Nombre de cada jugador |
+| 2    | Fecha 1 hacer | Fecha/hora 1ª cláusula hecha |
+| 3    | Fecha 2 hacer | Fecha/hora 2ª cláusula hecha |
+| 4    | Fecha 1 recibir | Fecha/hora 1ª cláusula recibida |
+| 5    | Fecha 2 recibir | Fecha/hora 2ª cláusula recibida |
+
+Para que la SPA muestre la tabla de cláusulas, publica esta pestaña en la web como CSV y configura en el frontend la variable de entorno **`VITE_CSV_CLAUSULAS`** con la URL (incluyendo el `gid` de la pestaña Clausulas).
