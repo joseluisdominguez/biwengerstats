@@ -30,6 +30,7 @@ jobs:
       - name: Install and build
         env:
           VITE_CSV_HISTORIAL: ${{ secrets.VITE_CSV_HISTORIAL }}
+          VITE_CSV_CLAUSULAS: ${{ secrets.VITE_CSV_CLAUSULAS }}
         run: |
           cd frontend
           npm ci
