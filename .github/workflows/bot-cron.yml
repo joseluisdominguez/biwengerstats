@@ -1,0 +1,45 @@
+# Ejecuta el bot de Biwenger en modo cron (0€, en los servidores de GitHub).
+# Añade los secrets en: Repo → Settings → Secrets and variables → Actions.
+
+name: Bot Biwenger (cron)
+
+on:
+  schedule:
+    # Cada 2 horas
+    - cron: "0 */2 * * *"
+  workflow_dispatch: # Permite lanzar a mano desde la pestaña Actions
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # GOOGLE_CREDENTIALS_JSON_B64 = base64 de tu credentials.json (base64 -w0 credentials.json)
+      - name: Google credentials
+        run: |
+          echo "${{ secrets.GOOGLE_CREDENTIALS_JSON_B64 }}" | base64 -d > credentials.json
+
+      - name: Run bot (cláusulas)
+        env:
+          BIWENGER_SKIP_SSL_VERIFY: 0
+          BIWENGER_BEARER_TOKEN: ${{ secrets.BIWENGER_BEARER_TOKEN }}
+          BIWENGER_LEAGUE_ID: ${{ secrets.BIWENGER_LEAGUE_ID }}
+          BIWENGER_USER_ID: ${{ secrets.BIWENGER_USER_ID }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_APPLICATION_CREDENTIALS: credentials.json
+          # BIWENGER_COMPETITION: ${{ secrets.BIWENGER_COMPETITION }}
+          # BIWENGER_FIRST_ROUND_ID: ${{ secrets.BIWENGER_FIRST_ROUND_ID }}
+        run: |
+          python bot.py --clausulas
