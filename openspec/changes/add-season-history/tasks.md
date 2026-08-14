@@ -57,7 +57,7 @@ Desplegable por sí solo, sin nada de lo demás. Arregla el descuadre del colist
 - [x] 7.2 `npm run lint` y `npm run build` en verde
 - [x] 7.3 Verificar los tres estados en local: temporada en curso sin jornadas, temporada 2025-2026 con sus 646 filas, y enlace directo `?temporada=2025-2026`
 - [x] 7.4 Verificar que el bote y el top de morosos de 2025-2026 coinciden con los valores que mostraba la aplicación antes del cambio
-- [ ] 7.5 Verificar tras el despliegue que las URLs de ambos CSV llegan al bundle de producción
+- [x] 7.5 Verificar tras el despliegue que las URLs de ambos CSV llegan al bundle de producción
 
 ## 8. Documentación
 
