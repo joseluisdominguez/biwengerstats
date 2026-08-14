@@ -38,6 +38,12 @@ Desplegable por sí solo, sin nada de lo demás. Arregla el descuadre del colist
 - [x] 5.1 Backfill de la columna G a `2025-2026` en las filas existentes de `Historial_Jornadas` (opcional: sin él se interpretan igual, ver `specs/season-history`)
 - [x] 5.2 Lanzar el workflow del bot a mano (`workflow_dispatch`) y comprobar que la pestaña `Clausulas` refleja la temporada en curso y los participantes actuales
 - [ ] 5.3 Tras la primera jornada disputada, comprobar que se registra con su columna `Temporada` y la deuda calculada con N=18
+      > **Queda abierta al archivar** (2026-08-14): la temporada 2026/2027 todavía no ha
+      > disputado ninguna jornada, así que la comprobación no puede hacerse. El cambio se
+      > archiva sin ella porque no bloquea nada: el bot ya está desplegado y la SPA interpreta
+      > las filas sin `Temporada` como `2025-2026`. Al registrarse la primera jornada, revisar
+      > en `Historial_Jornadas` que trae el slug `2026-2027` y que el colista genera 2 € con
+      > 18 participantes (posiciones 10-17 → 1 €, 18 → 2 €).
 
 ## 6. SPA: navegación por temporadas
 
