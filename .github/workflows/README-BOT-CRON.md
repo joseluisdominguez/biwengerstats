@@ -41,7 +41,9 @@ base64 -i credentials.json | tr -d '\n'
 | Secret | Descripción |
 |--------|-------------|
 | `BIWENGER_COMPETITION` | Por defecto `la-liga` |
-| `BIWENGER_FIRST_ROUND_ID` | ID de la primera jornada si no es 4484 |
+
+> `BIWENGER_FIRST_ROUND_ID` ya no se usa: el bot descubre la temporada en curso y sus jornadas
+> desde la API pública, sin necesidad de configurar la jornada inicial en cada temporada.
 
 ## 3. Cambiar horario
 

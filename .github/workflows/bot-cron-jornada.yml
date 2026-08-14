@@ -37,6 +37,5 @@ jobs:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_APPLICATION_CREDENTIALS: credentials.json
           # BIWENGER_COMPETITION: ${{ secrets.BIWENGER_COMPETITION }}
-          # BIWENGER_FIRST_ROUND_ID: ${{ secrets.BIWENGER_FIRST_ROUND_ID }}
         run: |
           python bot.py

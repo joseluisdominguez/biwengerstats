@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Biwenger Stats Bot - Extrae clasificación por jornada y actualiza Google Sheet.
-Reglas: Pos 17 → 2€, Pos 9-16 → 1€, resto → 0€.
+Reglas de deuda: la mitad de abajo paga 1€, el colista paga 2€ (ver compute_deuda).
 """
 
 import os
@@ -9,7 +9,33 @@ import sys
 import time
 from typing import Optional
 
-# --- Configuración (variables de entorno o constantes) ---
+
+def load_dotenv(path: str = ".env") -> None:
+    """
+    Carga variables de un fichero .env para desarrollo local.
+
+    Las variables ya presentes en el entorno tienen prioridad: en GitHub Actions los
+    secrets llegan como variables reales y un .env no debe poder pisarlos.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            lineas = f.readlines()
+    except FileNotFoundError:
+        return
+    for linea in lineas:
+        linea = linea.strip()
+        if not linea or linea.startswith("#") or "=" not in linea:
+            continue
+        clave, _, valor = linea.partition("=")
+        clave = clave.strip()
+        valor = valor.strip().strip('"').strip("'")
+        if clave and clave not in os.environ:
+            os.environ[clave] = valor
+
+
+load_dotenv()
+
+# --- Configuración (variables de entorno o .env) ---
 BIWENGER_BEARER_TOKEN = os.environ.get("BIWENGER_BEARER_TOKEN", "TU_BEARER_TOKEN_AQUI")
 BIWENGER_LEAGUE_ID = os.environ.get("BIWENGER_LEAGUE_ID", "TU_LEAGUE_ID_AQUI")
 BIWENGER_USER_ID = os.environ.get("BIWENGER_USER_ID", "TU_USER_ID_AQUI")
@@ -21,6 +47,14 @@ BIWENGER_API_BASE = "https://biwenger.as.com/api/v2"
 # Nombre de la pestaña en el Sheet
 SHEET_TAB_HISTORIAL = "Historial_Jornadas"
 SHEET_TAB_CLAUSULAS = "Clausulas"
+
+# Etiqueta de la fila de la pestaña Clausulas que publica la temporada en curso.
+# Es el contrato con la SPA: le permite saber cuál es la temporada actual aunque
+# todavía no tenga ninguna jornada registrada.
+CLAUSULAS_LABEL_TEMPORADA = "Temporada actual"
+
+# Temporada de las filas del historial anteriores a la introducción de la columna Temporada.
+TEMPORADA_POR_DEFECTO = "2025-2026"
 
 # API pública para listar jornadas (sin auth). Competición por defecto.
 BIWENGER_PUBLIC_API_BASE = "https://cf.biwenger.com/api/v2"
@@ -34,60 +68,92 @@ PUBLIC_API_HEADERS = {
 }
 
 
-def get_completed_round_ids(competition_slug: str = "la-liga", first_round_id: Optional[int] = None) -> list[int]:
+def _fetch_public_round(round_id: Optional[int], competition_slug: str) -> dict:
     """
-    Obtiene los IDs de todas las jornadas disputadas iterando por la API pública.
-    Empieza en first_round_id (o 4484 para la-liga J1) y sigue data.next.id hasta que no haya next.
-    Las jornadas cuyo data.name termina en "(aplazada)" se omiten.
-    """
-    import requests
-    import certifi
-
-    if first_round_id is None:
-        first_round_id = 4484 if competition_slug == "la-liga" else 4484
-    skip_verify = os.environ.get("BIWENGER_SKIP_SSL_VERIFY", "").strip().lower() in ("1", "true", "yes")
-    verify_ssl = False if skip_verify else certifi.where()
-
-    round_ids = []
-    current_id = first_round_id
-    seen = set()
-
-    while current_id and current_id not in seen:
-        seen.add(current_id)
-        url = f"{BIWENGER_PUBLIC_API_BASE}/rounds/{competition_slug}/{current_id}"
-        params = {"score": 5, "lang": "es"}
-        resp = requests.get(url, params=params, headers=PUBLIC_API_HEADERS, timeout=15, verify=verify_ssl)
-        resp.raise_for_status()
-        data = resp.json()
-        # No incluir jornadas aplazadas (ej. "Jornada 6 (aplazada)")
-        round_name = (data.get("data") or {}).get("name") or ""
-        if not round_name.strip().endswith("(aplazada)"):
-            round_ids.append(current_id)
-        next_round = data.get("data", {}).get("next") or data.get("next")
-        current_id = next_round.get("id") if isinstance(next_round, dict) else None
-
-    return round_ids
-
-
-def get_round_name_public(round_id: int, competition_slug: str = "la-liga") -> str:
-    """
-    Obtiene el nombre de la jornada desde la API pública (data.name).
-    Mismo endpoint y campo que se usa para filtrar "(aplazada)".
+    GET /rounds/{competicion}[/{id}] en la API pública (sin auth).
+    Sin round_id devuelve la jornada actual. Retorna el objeto `data` de la respuesta.
     """
     import requests
     import certifi
 
     skip_verify = os.environ.get("BIWENGER_SKIP_SSL_VERIFY", "").strip().lower() in ("1", "true", "yes")
     verify_ssl = False if skip_verify else certifi.where()
-    url = f"{BIWENGER_PUBLIC_API_BASE}/rounds/{competition_slug}/{round_id}"
-    params = {"score": 5, "lang": "es"}
-    try:
-        resp = requests.get(url, params=params, headers=PUBLIC_API_HEADERS, timeout=15, verify=verify_ssl)
-        resp.raise_for_status()
-        data = resp.json()
-        return ((data.get("data") or {}).get("name") or "").strip()
-    except Exception:
-        return ""
+    url = f"{BIWENGER_PUBLIC_API_BASE}/rounds/{competition_slug}"
+    if round_id is not None:
+        url = f"{url}/{round_id}"
+    resp = requests.get(url, params={"score": 5, "lang": "es"}, headers=PUBLIC_API_HEADERS, timeout=15, verify=verify_ssl)
+    resp.raise_for_status()
+    return resp.json().get("data") or {}
+
+
+def get_current_season(competition_slug: str = "la-liga") -> dict:
+    """
+    Temporada en curso según la API pública: la jornada actual (endpoint sin id) trae
+    la temporada a la que pertenece, con la lista completa de sus jornadas.
+
+    Retorna {"slug": str, "name": str, "rounds": list[dict]}.
+
+    Los IDs de jornada no son contiguos entre temporadas (25/26 acaba en 4521 y 26/27
+    empieza en 4899, y la última jornada de una temporada tiene next=None), por eso no
+    se puede descubrir la temporada nueva encadenando jornadas desde un ID fijo.
+    """
+    data = _fetch_public_round(None, competition_slug)
+    season = data.get("season") or {}
+    slug = (season.get("slug") or "").strip()
+    if not slug:
+        raise RuntimeError(f"La API no devolvió temporada para la competición '{competition_slug}'.")
+    return {
+        "slug": slug,
+        "name": (season.get("name") or "").strip(),
+        "rounds": season.get("rounds") or [],
+    }
+
+
+def get_round_public_info(round_id: int, competition_slug: str = "la-liga") -> dict:
+    """Nombre y temporada de una jornada concreta. Retorna {"name": str, "season_slug": str}."""
+    data = _fetch_public_round(round_id, competition_slug)
+    season = data.get("season") or {}
+    slug = (season.get("slug") or "").strip()
+    if not slug:
+        raise RuntimeError(f"La API no devolvió temporada para la jornada {round_id}.")
+    return {"name": (data.get("name") or "").strip(), "season_slug": slug}
+
+
+def is_jornada_aplazada(round_name: str) -> bool:
+    """Las jornadas aplazadas (ej. "Jornada 6 (aplazada)") no cuentan para la deuda."""
+    return (round_name or "").strip().endswith("(aplazada)")
+
+
+def get_finished_round_ids(season: dict) -> list[int]:
+    """IDs de las jornadas ya disputadas de una temporada, en orden y sin aplazadas."""
+    ids = []
+    for r in season.get("rounds") or []:
+        if not isinstance(r, dict) or r.get("status") != "finished":
+            continue
+        if is_jornada_aplazada(r.get("name")):
+            continue
+        rid = r.get("id")
+        if isinstance(rid, int):
+            ids.append(rid)
+    return ids
+
+
+def get_season_round_ids(season: dict) -> list[int]:
+    """Todos los IDs de jornada de una temporada, estén disputadas o no."""
+    return [
+        r["id"]
+        for r in season.get("rounds") or []
+        if isinstance(r, dict) and isinstance(r.get("id"), int)
+    ]
+
+
+def get_round_names(season: dict) -> dict[int, str]:
+    """Mapa id -> nombre de jornada, para no pedir el nombre una vez por jornada."""
+    names = {}
+    for r in season.get("rounds") or []:
+        if isinstance(r, dict) and isinstance(r.get("id"), int):
+            names[r["id"]] = (r.get("name") or "").strip()
+    return names
 
 
 def _biwenger_headers() -> dict:
@@ -105,7 +171,12 @@ def get_round_standings(round_id: int) -> dict:
     Obtiene la clasificación de una jornada desde la API de Biwenger (autenticada).
     round_id: ID de la jornada (ej. 4484 para Jornada 1). Endpoint: GET /rounds/league/{round_id}
     Solo incluye jugadores con lineup (jornada disputada); puntos y posición vienen de standings[].lineup.
-    Retorna {"standings": list[dict]}. El nombre de la jornada se obtiene por separado con get_round_name_public().
+
+    Retorna {"standings": list[dict], "members": list[str], "league_size": int}:
+    - standings: solo quienes tienen alineación (filas de puntuación)
+    - members: TODOS los miembros actuales de la liga, tengan alineación o no
+    - league_size: participantes con los que se jugó la jornada (ver compute_league_size)
+    El nombre y la temporada de la jornada se obtienen por separado de la API pública.
     """
     import requests
     import certifi
@@ -131,31 +202,76 @@ def get_round_standings(round_id: int) -> dict:
     except AttributeError:
         raw_list = []
 
+    members = []
     for i, entry in enumerate(raw_list, start=1):
         if not isinstance(entry, dict):
             continue
+        name = entry.get("name") or f"Jugador_{i}"
+        members.append(name)
         lineup = entry.get("lineup")
         if not lineup:
             continue  # jornada aún no disputada para este jugador / no cuenta
-        name = entry.get("name") or f"Jugador_{i}"
         points = int(lineup.get("points", 0))
         position = int(lineup.get("position", 0))
         standings.append({"name": name, "points": points, "position": position})
 
-    return {"standings": standings}
+    return {
+        "standings": standings,
+        "members": members,
+        "league_size": compute_league_size(standings, members),
+    }
 
 
-def compute_deuda(position: int) -> int:
-    """Reglas: posición 17 → 2€, posiciones 9-16 → 1€, resto → 0€."""
-    if position == 17:
+def compute_league_size(standings: list[dict], members: list[str]) -> int:
+    """
+    Tamaño de la liga con el que se jugó una jornada, a partir de su clasificación.
+
+    Se toma de la posición más alta y NO del número de miembros: `standings` refleja la
+    plantilla de HOY, así que quien se haya ido desde entonces ya no aparece y quien haya
+    entrado después aparece sin alineación. Verificado contra la API: la J38 de 2025/2026
+    devuelve 18 miembros actuales, solo 16 con alineación y posiciones [1..6, 8..17];
+    max(position)=17 es el tamaño real con el que se disputó.
+
+    En una jornada finalizada Biwenger asigna posición a todos los participantes (las 38
+    jornadas de 2025/2026 tienen 17 filas cada una), así que la posición más alta equivale
+    al número de participantes. Sin clasificación (jornada pendiente) se usa la plantilla
+    actual, que es lo único conocido.
+    """
+    return max((s["position"] for s in standings), default=len(members))
+
+
+def compute_deuda(position: int, total: int) -> int:
+    """
+    Regla: "la mitad de abajo paga, el colista paga doble".
+
+    - colista (position == total): 2€
+    - por debajo de la mitad de la tabla (position > total // 2): 1€
+    - resto: 0€
+
+    El tamaño de la liga varía cada temporada, por eso `total` es obligatorio.
+    Para total=17 reproduce la regla anterior (17 → 2€, 9-16 → 1€).
+    """
+    if position == total:
         return 2
-    if 9 <= position <= 16:
+    if position > total // 2:
         return 1
     return 0
 
 
-def build_historial_rows(jornada: int, round_name: str, standings: list[dict]) -> list[list]:
-    """Genera las filas para append en Historial_Jornadas: Jornada, Nombre_Jornada, Jugador, Puntos, Posicion, Deuda_Generada."""
+def build_historial_rows(
+    jornada: int,
+    round_name: str,
+    standings: list[dict],
+    league_size: int,
+    temporada: str,
+) -> list[list]:
+    """
+    Genera las filas para append en Historial_Jornadas:
+    Jornada, Nombre_Jornada, Jugador, Puntos, Posicion, Deuda_Generada, Temporada.
+
+    Temporada va la última para no desplazar los índices de columna que lee el bot
+    (columna A = Jornada para deduplicar, columna C = Jugador).
+    """
     rows = []
     for s in standings:
         pos = s["position"]
@@ -165,7 +281,8 @@ def build_historial_rows(jornada: int, round_name: str, standings: list[dict]) -
             s["name"],
             s["points"],
             pos,
-            compute_deuda(pos),
+            compute_deuda(pos, league_size),
+            temporada,
         ])
     return rows
 
@@ -212,8 +329,15 @@ def get_existing_jornada_ids_in_sheet() -> set[int]:
     return existing
 
 
-def get_all_players_from_historial_sheet() -> list[str]:
-    """Lee la columna Jugador (C) del Sheet Historial y devuelve la lista única de jugadores (respaldo si la API falla)."""
+def get_all_players_from_historial_sheet(temporada: str) -> list[str]:
+    """
+    Jugadores registrados en el historial para una temporada concreta (respaldo si la API falla).
+
+    Se acota por temporada para no devolver la plantilla del año anterior: sin este filtro,
+    al arrancar una temporada nueva se listarían los participantes de la anterior.
+    Las filas sin columna Temporada son anteriores a este cambio y cuentan como
+    TEMPORADA_POR_DEFECTO.
+    """
     import gspread
     from google.oauth2.service_account import Credentials
 
@@ -226,15 +350,21 @@ def get_all_players_from_historial_sheet() -> list[str]:
     client = gspread.authorize(creds)
     sheet = client.open_by_key(GOOGLE_SHEET_ID)
     worksheet = sheet.worksheet(SHEET_TAB_HISTORIAL)
-    # Columna C = Jugador (índice 3 en gspread)
-    col_c = worksheet.col_values(3)
-    seen = set()
-    names = []
-    for val in col_c:
-        name = (val or "").strip()
-        if name and name not in seen:
-            seen.add(name)
-            names.append(name)
+    return filter_players_by_temporada(worksheet.get_all_values(), temporada)
+
+
+def filter_players_by_temporada(rows: list[list], temporada: str) -> list[str]:
+    """Nombres únicos (columna C) de las filas del historial que pertenecen a `temporada`."""
+    names = set()
+    for row in rows:
+        if not isinstance(row, list) or len(row) < 3:
+            continue
+        name = (row[2] or "").strip()
+        if not name:
+            continue
+        fila_temporada = (row[6].strip() if len(row) >= 7 else "") or TEMPORADA_POR_DEFECTO
+        if fila_temporada == temporada:
+            names.add(name)
     return sorted(names)
 
 
@@ -336,8 +466,12 @@ def write_clausulas_sheet(
     hacer: dict[str, list[int]],
     recibir: dict[str, list[int]],
     jugadores: list[str],
+    temporada: str,
 ) -> None:
-    """Escribe la pestaña Clausulas: fila 1 = jugadores, filas 2-5 = Fecha 1/2 hacer, Fecha 1/2 recibir."""
+    """
+    Escribe la pestaña Clausulas: fila 1 = jugadores, filas 2-5 = Fecha 1/2 recibir y hacer,
+    y una última fila con la temporada en curso (ver CLAUSULAS_LABEL_TEMPORADA).
+    """
     import gspread
     from google.oauth2.service_account import Credentials
     from datetime import datetime, timezone
@@ -354,7 +488,12 @@ def write_clausulas_sheet(
     try:
         worksheet = sheet.worksheet(SHEET_TAB_CLAUSULAS)
     except Exception:
-        worksheet = sheet.add_worksheet(title=SHEET_TAB_CLAUSULAS, rows=6, cols=max(len(jugadores) + 1, 2))
+        worksheet = sheet.add_worksheet(title=SHEET_TAB_CLAUSULAS, rows=7, cols=max(len(jugadores) + 1, 2))
+
+    # La pestaña se reescribe entera cada vez. Limpiarla antes evita que, si la liga
+    # encoge respecto al año anterior, queden columnas obsoletas a la derecha del
+    # rango que se escribe (el tamaño de la liga cambia cada temporada).
+    worksheet.clear()
 
     def ts_to_str(ts: int) -> str:
         return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d/%m/%Y %H:%M")
@@ -380,9 +519,12 @@ def write_clausulas_sheet(
                 row.append(ts_to_str(vals[1]) if len(vals) >= 2 else "")
         matrix.append(row)
 
+    # Manifiesto de temporada en curso, rellenado hasta num_cols para no dejar la fila irregular
+    matrix.append([CLAUSULAS_LABEL_TEMPORADA, temporada] + [""] * (num_cols - 2))
+
     range_str = f"A1:{_col_letter(num_cols)}{len(matrix)}"
     worksheet.update(values=matrix, range_name=range_str, value_input_option="USER_ENTERED")
-    print(f"Sheet '{SHEET_TAB_CLAUSULAS}' actualizado: {len(jugadores)} jugadores.")
+    print(f"Sheet '{SHEET_TAB_CLAUSULAS}' actualizado: {len(jugadores)} jugadores, temporada {temporada}.")
 
 
 def _col_letter(n: int) -> str:
@@ -394,42 +536,69 @@ def _col_letter(n: int) -> str:
     return s or "A"
 
 
-def get_all_league_players() -> list[str]:
-    """Obtiene la lista de los 17 jugadores de la liga desde la última jornada disputada."""
-    competition = os.environ.get("BIWENGER_COMPETITION", "la-liga").strip()
-    first_id = os.environ.get("BIWENGER_FIRST_ROUND_ID")
-    first_round_id = int(first_id) if first_id and str(first_id).isdigit() else None
-    try:
-        completed_ids = get_completed_round_ids(competition_slug=competition, first_round_id=first_round_id)
-    except Exception:
-        return []
-    if not completed_ids:
-        return []
-    last_round_id = completed_ids[-1]
-    result = get_round_standings(last_round_id)
-    standings = result.get("standings") or []
-    names = [s["name"] for s in standings if s.get("name")]
-    return sorted(names)
+def get_all_league_players(season: Optional[dict] = None) -> list[str]:
+    """
+    Miembros actuales de la liga.
+
+    Usa la clasificación completa (members), no solo quienes tienen alineación, para que
+    también funcione antes de disputarse la primera jornada: al arrancar la temporada no
+    hay ninguna jornada disputada y la lista de participantes tiene que salir igualmente.
+    """
+    if season is None:
+        competition = os.environ.get("BIWENGER_COMPETITION", "la-liga").strip()
+        try:
+            season = get_current_season(competition)
+        except Exception as e:
+            print(f"No se pudo obtener la temporada en curso: {e}")
+            return []
+
+    finished = get_finished_round_ids(season)
+    all_ids = get_season_round_ids(season)
+    # Última jornada disputada si la hay; si no, la primera de la temporada (aún pendiente)
+    probe_ids = [finished[-1]] if finished else all_ids[:1]
+
+    for rid in probe_ids:
+        try:
+            result = get_round_standings(rid)
+        except Exception as e:
+            print(f"No se pudo leer la clasificación de la jornada {rid}: {e}")
+            continue
+        members = result.get("members") or []
+        if members:
+            return sorted(members)
+
+    print("La API no devolvió los miembros de la liga.")
+    return []
 
 
 def run_clausulas() -> None:
     """Obtiene el board, filtra cláusulas, agrega por jugador (2 hacer + 2 recibir) y escribe la pestaña Clausulas."""
+    competition = os.environ.get("BIWENGER_COMPETITION", "la-liga").strip()
+    try:
+        season = get_current_season(competition)
+    except Exception as e:
+        # Sin temporada no se reescribe la pestaña: dejarla con el manifiesto anterior
+        # es mejor que publicar cláusulas sin saber a qué temporada pertenecen.
+        print(f"Error obteniendo la temporada en curso: {e}")
+        sys.exit(1)
+
     try:
         board_items = fetch_league_board_all()
     except Exception as e:
         print(f"Error obteniendo el board de la liga: {e}")
         sys.exit(1)
     hacer, recibir, jugadores_from_clauses = build_clausulas_data(board_items)
-    # Lista completa: jugadores de la liga (API última jornada) + los que salen en cláusulas; si la API falla, respaldo desde el sheet Historial
-    jugadores_api = get_all_league_players()
+    # Lista completa: miembros de la liga (API) + los que salen en cláusulas; si la API falla,
+    # respaldo desde el Historial acotado a la temporada en curso
+    jugadores_api = get_all_league_players(season)
     if jugadores_api:
         jugadores = sorted(set(jugadores_api) | set(jugadores_from_clauses))
     else:
-        jugadores_sheet = get_all_players_from_historial_sheet()
+        jugadores_sheet = get_all_players_from_historial_sheet(season["slug"])
         jugadores = sorted(set(jugadores_sheet) | set(jugadores_from_clauses)) if jugadores_sheet else jugadores_from_clauses
     if not jugadores:
         print("No se encontraron jugadores (API ni Sheet). La pestaña se actualizará vacía.")
-    write_clausulas_sheet(hacer, recibir, jugadores)
+    write_clausulas_sheet(hacer, recibir, jugadores, season["slug"])
 
 
 def run(round_id: Optional[int] = None) -> None:
@@ -457,49 +626,57 @@ def run(round_id: Optional[int] = None) -> None:
         competition = os.environ.get("BIWENGER_COMPETITION", "la-liga").strip()
         result = get_round_standings(round_id)
         standings = result["standings"]
-        round_name = get_round_name_public(round_id, competition)
+        league_size = result["league_size"]
+        try:
+            info = get_round_public_info(round_id, competition)
+        except Exception as e:
+            # Sin temporada no se escribe nada: una fila sin temporada ensucia el historial.
+            print(f"Error obteniendo la temporada de la jornada {round_id}: {e}")
+            sys.exit(1)
         if not standings:
             print(f"Jornada {round_id} aún no disputada (sin lineup) o sin datos. No se escribe nada.")
             return
-        if len(standings) != 17:
-            print(f"Advertencia: se obtuvieron {len(standings)} jugadores (se esperaban 17).")
-        rows = build_historial_rows(round_id, round_name, standings)
+        if len(standings) != league_size:
+            print(f"Advertencia: {len(standings)} jugadores con alineación de {league_size} en la liga.")
+        rows = build_historial_rows(round_id, info["name"], standings, league_size, info["season_slug"])
         append_to_google_sheet(rows)
         return
 
-    # Modo "todas las jornadas": completadas según API pública, sin repetir las ya en el Sheet
+    # Modo "todas las jornadas" de la temporada en curso, sin repetir las ya en el Sheet
     competition = os.environ.get("BIWENGER_COMPETITION", "la-liga").strip()
-    first_id = os.environ.get("BIWENGER_FIRST_ROUND_ID")
-    first_round_id = int(first_id) if first_id and str(first_id).isdigit() else None
     try:
-        completed_ids = get_completed_round_ids(competition_slug=competition, first_round_id=first_round_id)
+        season = get_current_season(competition)
     except Exception as e:
-        print(f"Error obteniendo jornadas completadas: {e}")
+        print(f"Error obteniendo la temporada en curso: {e}")
         print("Uso: python bot.py   (todas) | python bot.py <ID_jornada>   (una sola)")
         sys.exit(1)
+    completed_ids = get_finished_round_ids(season)
+    round_names = get_round_names(season)
     if not completed_ids:
-        print("No se encontraron jornadas completadas.")
+        print(f"Temporada {season['slug']}: aún no hay jornadas disputadas.")
         return
     try:
         existing = get_existing_jornada_ids_in_sheet()
     except Exception as e:
         print(f"Error leyendo el Sheet (se volcarán todas): {e}")
         existing = set()
+    # Los IDs de jornada no se repiten entre temporadas, así que basta con deduplicar por ID
     to_process = [r for r in completed_ids if r not in existing]
     if not to_process:
-        print("Todas las jornadas completadas ya están en el Sheet. Nada que añadir.")
+        print(f"Temporada {season['slug']}: todas las jornadas disputadas ya están en el Sheet. Nada que añadir.")
         return
-    print(f"Jornadas completadas: {len(completed_ids)}. Ya en Sheet: {len(existing)}. A añadir: {len(to_process)}.")
+    print(f"Temporada {season['slug']}. Jornadas disputadas: {len(completed_ids)}. Ya en Sheet: {len(existing)}. A añadir: {len(to_process)}.")
     for rid in to_process:
         result = get_round_standings(rid)
         standings = result["standings"]
-        round_name = get_round_name_public(rid, competition)
+        league_size = result["league_size"]
+        round_name = round_names.get(rid) or f"Jornada {rid}"
         if not standings:
             print(f"Jornada {rid} aún no disputada (sin lineup). Se omite.")
             continue
-        if len(standings) != 17:
-            print(f"Advertencia jornada {rid}: {len(standings)} jugadores (se esperaban 17).")
-        rows = build_historial_rows(rid, round_name, standings)
+        if len(standings) != league_size:
+            print(f"Advertencia jornada {rid}: {len(standings)} jugadores con alineación de {league_size} en la liga.")
+        rows = build_historial_rows(rid, round_name, standings, league_size, season["slug"])
         append_to_google_sheet(rows)
 
 

@@ -18,10 +18,38 @@ const CSV_HISTORIAL =
 // CSV de la pestaña Clausulas (opcional): fila 1 = jugadores, filas 2-5 = Fecha 1/2 hacer, Fecha 1/2 recibir
 const CSV_CLAUSULAS = import.meta.env.VITE_CSV_CLAUSULAS || "";
 
+// Deuda máxima que puede generar un jugador en una jornada (la del colista).
+// Se usa solo para el tratamiento visual: el importe siempre sale del dato.
+const DEUDA_ALTA = 2;
+
+// Temporada de las filas anteriores a la introducción de la columna Temporada.
+const TEMPORADA_POR_DEFECTO = "2025-2026";
+
+// Etiqueta de la fila con la que el bot publica la temporada en curso en la pestaña
+// Clausulas. Permite conocerla aunque todavía no haya ninguna jornada registrada.
+const CLAUSULAS_LABEL_TEMPORADA = "Temporada actual";
+
 function parseNum(val) {
   if (val === "" || val == null) return 0;
   const n = Number(String(val).replace(",", "."));
   return Number.isNaN(n) ? 0 : n;
+}
+
+/** "2026-2027" → "26/27" */
+function temporadaCorta(slug) {
+  const m = String(slug ?? "").match(/^(\d{4})-(\d{4})$/);
+  return m ? `${m[1].slice(2)}/${m[2].slice(2)}` : String(slug ?? "");
+}
+
+/** "2026-2027" → "2026/2027" */
+function temporadaLarga(slug) {
+  const m = String(slug ?? "").match(/^(\d{4})-(\d{4})$/);
+  return m ? `${m[1]}/${m[2]}` : String(slug ?? "");
+}
+
+function getTemporadaFromUrl() {
+  if (typeof window === "undefined") return "";
+  return new URLSearchParams(window.location.search).get("temporada") || "";
 }
 
 function fetchCsv(url) {
@@ -30,7 +58,8 @@ function fetchCsv(url) {
     .then((text) => {
       const result = Papa.parse(text, { header: false, skipEmptyLines: true });
       const rows = result.data || [];
-      // 6 columnas: Jornada, Nombre_Jornada, Jugador, Puntos, Posicion, Deuda_Generada
+      // 7 columnas: Jornada, Nombre_Jornada, Jugador, Puntos, Posicion, Deuda_Generada, Temporada
+      // 6 columnas: sin Temporada (filas anteriores a este cambio → TEMPORADA_POR_DEFECTO)
       // 5 columnas (legacy): Jornada, Jugador, Puntos, Posicion, Deuda_Generada
       return rows
         .filter((row) => Array.isArray(row) && row.length >= 5)
@@ -43,6 +72,7 @@ function fetchCsv(url) {
                 Puntos: parseNum(row[3]),
                 Posicion: parseNum(row[4]),
                 Deuda_Generada: parseNum(row[5]),
+                Temporada: String(row[6] ?? "").trim() || TEMPORADA_POR_DEFECTO,
               }
             : {
                 Jornada: parseNum(row[0]),
@@ -51,6 +81,7 @@ function fetchCsv(url) {
                 Puntos: parseNum(row[2]),
                 Posicion: parseNum(row[3]),
                 Deuda_Generada: parseNum(row[4]),
+                Temporada: TEMPORADA_POR_DEFECTO,
               }
         );
     });
@@ -111,7 +142,12 @@ function fetchClausulasCsv(url) {
     .then((text) => {
       const result = Papa.parse(text, { header: false, skipEmptyLines: false });
       const rows = result.data || [];
-      if (rows.length < 5) return [];
+      // La fila del manifiesto se busca por etiqueta, no por posición
+      const manifiesto = rows.find(
+        (r) => Array.isArray(r) && String(r[0] ?? "").trim() === CLAUSULAS_LABEL_TEMPORADA
+      );
+      const temporadaActual = manifiesto ? String(manifiesto[1] ?? "").trim() : "";
+      if (rows.length < 5) return { jugadores: [], temporadaActual };
       const row0 = rows[0] || [];
       const row1 = rows[1] || [];
       const row2 = rows[2] || [];
@@ -129,7 +165,7 @@ function fetchClausulasCsv(url) {
           Fecha2Hacer: String(row4[col] ?? "").trim(),
         });
       }
-      return out;
+      return { jugadores: out, temporadaActual };
     });
 }
 
@@ -138,7 +174,13 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [clausulasData, setClausulasData] = useState([]);
-  const [clausulasLoading, setClausulasLoading] = useState(false);
+  const [clausulasLoading, setClausulasLoading] = useState(
+    Boolean(CSV_CLAUSULAS) && !CSV_CLAUSULAS.includes("TU_")
+  );
+  // Temporada en curso publicada por el bot; "" si no está disponible
+  const [temporadaPublicada, setTemporadaPublicada] = useState("");
+  // Temporada elegida por quien navega (o la del enlace); "" = usar la temporada en curso
+  const [temporadaElegida, setTemporadaElegida] = useState(() => getTemporadaFromUrl());
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 60_000);
@@ -146,8 +188,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    setLoading(true);
-    setError(null);
     fetchCsv(CSV_HISTORIAL)
       .then((data) => setHistorial(Array.isArray(data) ? data : []))
       .catch((err) => setError(err.message))
@@ -155,32 +195,72 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!CSV_CLAUSULAS || CSV_CLAUSULAS.includes("TU_")) {
-      setClausulasData([]);
-      return;
-    }
-    setClausulasLoading(true);
+    if (!CSV_CLAUSULAS || CSV_CLAUSULAS.includes("TU_")) return;
     fetchClausulasCsv(CSV_CLAUSULAS)
-      .then((data) => setClausulasData(Array.isArray(data) ? data : []))
+      .then((data) => {
+        setClausulasData(Array.isArray(data?.jugadores) ? data.jugadores : []);
+        setTemporadaPublicada(data?.temporadaActual || "");
+      })
       .catch(() => setClausulasData([]))
       .finally(() => setClausulasLoading(false));
   }, []);
 
+  // Volver atrás en el navegador debe cambiar la temporada, no salir de la página
+  useEffect(() => {
+    const onPopState = () => setTemporadaElegida(getTemporadaFromUrl());
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  const temporadasDisponibles = useMemo(() => {
+    const set = new Set(historial.map((r) => r.Temporada).filter(Boolean));
+    if (temporadaPublicada) set.add(temporadaPublicada);
+    // Más reciente primero; los slugs AAAA-AAAA ordenan lexicográficamente
+    return [...set].sort().reverse();
+  }, [historial, temporadaPublicada]);
+
+  // Si el bot no ha publicado la temporada en curso, se asume la más reciente con datos
+  const temporadaEnCurso =
+    temporadaPublicada || temporadasDisponibles[0] || TEMPORADA_POR_DEFECTO;
+
+  // Un slug inválido o ausente en la URL cae en la temporada en curso
+  const temporadaEfectiva = temporadasDisponibles.includes(temporadaElegida)
+    ? temporadaElegida
+    : temporadaEnCurso;
+
+  const esTemporadaEnCurso = temporadaEfectiva === temporadaEnCurso;
+
+  const seleccionarTemporada = (slug) => {
+    setTemporadaElegida(slug);
+    const url = new URL(window.location.href);
+    url.searchParams.set("temporada", slug);
+    window.history.pushState({}, "", url);
+  };
+
+  // El título de la pestaña también sigue a la temporada seleccionada
+  useEffect(() => {
+    document.title = `🏆La LigaDiarios📝🏆${temporadaCorta(temporadaEfectiva)}⚽`;
+  }, [temporadaEfectiva]);
+
+  // Único punto de filtrado por temporada: todo lo que se deriva de aquí queda acotado
+  // (jornadas, bote, morosos, gráfica y lista de participantes).
   const normalizedHistorial = useMemo(() => {
-    const rows = historial.map((row) => ({
-      Jornada: row.Jornada ?? 0,
-      Nombre_Jornada: row.Nombre_Jornada ?? "",
-      Jugador: row.Jugador ?? "",
-      Puntos: row.Puntos ?? 0,
-      Posicion: row.Posicion ?? 0,
-      Deuda_Generada: row.Deuda_Generada ?? 0,
-    }));
+    const rows = historial
+      .filter((row) => (row.Temporada || TEMPORADA_POR_DEFECTO) === temporadaEfectiva)
+      .map((row) => ({
+        Jornada: row.Jornada ?? 0,
+        Nombre_Jornada: row.Nombre_Jornada ?? "",
+        Jugador: row.Jugador ?? "",
+        Puntos: row.Puntos ?? 0,
+        Posicion: row.Posicion ?? 0,
+        Deuda_Generada: row.Deuda_Generada ?? 0,
+      }));
     // Ordenar por ID de jornada (y por posición dentro de cada jornada)
     return rows.sort((a, b) => {
       if (a.Jornada !== b.Jornada) return a.Jornada - b.Jornada;
       return a.Posicion - b.Posicion;
     });
-  }, [historial]);
+  }, [historial, temporadaEfectiva]);
 
   const sortedJornadaIds = useMemo(() => {
     const ids = [...new Set(normalizedHistorial.map((r) => r.Jornada))];
@@ -194,9 +274,17 @@ export default function App() {
     return (row?.Nombre_Jornada || "").trim() || `Jornada ${lastId}`;
   }, [sortedJornadaIds, normalizedHistorial]);
 
-  const [currentJornadaIndex, setCurrentJornadaIndex] = useState(null);
+  // La jornada elegida se guarda junto a su temporada: al cambiar de temporada la
+  // selección deja de aplicar sola y se vuelve a la última jornada, sin índices fuera de rango.
+  const [jornadaElegida, setJornadaElegida] = useState({ temporada: null, index: null });
   const [showJornadaModal, setShowJornadaModal] = useState(false);
   const [selectedJugadoresDeuda, setSelectedJugadoresDeuda] = useState(new Set());
+
+  const currentJornadaIndex =
+    jornadaElegida.temporada === temporadaEfectiva ? jornadaElegida.index : null;
+
+  const setCurrentJornadaIndex = (index) =>
+    setJornadaElegida({ temporada: temporadaEfectiva, index });
 
   const effectiveJornadaIndex =
     currentJornadaIndex != null
@@ -256,11 +344,30 @@ export default function App() {
     return Array.from(map.values());
   }, [normalizedHistorial]);
 
+  // Participantes de la temporada. En la temporada en curso se completan con los de la
+  // pestaña de cláusulas, para que la lista salga aunque no se haya disputado ninguna jornada.
+  const rosterTemporada = useMemo(() => {
+    const set = new Set(normalizedHistorial.map((r) => r.Jugador).filter(Boolean));
+    if (esTemporadaEnCurso) {
+      for (const c of clausulasData) {
+        if (c.Jugador) set.add(c.Jugador);
+      }
+    }
+    return [...set];
+  }, [normalizedHistorial, clausulasData, esTemporadaEnCurso]);
+
   const topMorosos = useMemo(() => {
-    return [...porJugador]
-      .filter((j) => j.Deuda_Generada > 0)
-      .sort((a, b) => b.Deuda_Generada - a.Deuda_Generada);
-  }, [porJugador]);
+    const deudaPorJugador = new Map(porJugador.map((j) => [j.Jugador, j.Deuda_Generada]));
+    return rosterTemporada
+      .map((nombre) => ({
+        Jugador: nombre,
+        Deuda_Generada: deudaPorJugador.get(nombre) ?? 0,
+      }))
+      .sort(
+        (a, b) =>
+          b.Deuda_Generada - a.Deuda_Generada || a.Jugador.localeCompare(b.Jugador)
+      );
+  }, [rosterTemporada, porJugador]);
 
   const boteTeorico = useMemo(
     () => normalizedHistorial.reduce((s, r) => s + r.Deuda_Generada, 0),
@@ -305,6 +412,13 @@ export default function App() {
     "#8b5cf6",
     "#0ea5e9",
     "#f43f5e",
+    "#7dd3fc",
+    "#c084fc",
+    "#fda4af",
+    "#fbbf24",
+    "#4ade80",
+    "#2dd4bf",
+    "#e879f9",
   ];
 
   function LegendDeuda({ jugadoresList, chartColors, selectedJugadoresDeuda, onToggle }) {
@@ -374,18 +488,41 @@ export default function App() {
       <header className="border-b border-[#2a2a32] bg-[#1a1a1f]/80 backdrop-blur sticky top-0 z-10">
         <div className="max-w-6xl mx-auto px-4 py-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
-            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
-              <span className="text-white">🏆La LigaDiarios📝🏆25/26⚽</span>
-              <span className="text-[#00ff88]"> — Biwenger</span>
-            </h1>
-            {ultimaJornadaNombre && (
-              <p className="text-gray-400 text-sm mt-1">
-                Datos hasta la {ultimaJornadaNombre}
-              </p>
-            )}
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
+                <span className="text-white">
+                  🏆La LigaDiarios📝🏆{temporadaCorta(temporadaEfectiva)}⚽
+                </span>
+                <span className="text-[#00ff88]"> — Biwenger</span>
+              </h1>
+              {temporadasDisponibles.length > 1 && (
+                <label className="inline-flex items-center gap-2">
+                  <span className="sr-only">Temporada</span>
+                  <select
+                    value={temporadaEfectiva}
+                    onChange={(e) => seleccionarTemporada(e.target.value)}
+                    className="rounded-lg border border-[#2a2a32] bg-[#25252b] text-[#e2e2e8] text-sm px-3 py-1.5 hover:bg-[#2a2a32] focus:outline-none focus:ring-2 focus:ring-[#00ff88]/50 cursor-pointer"
+                  >
+                    {temporadasDisponibles.map((slug) => (
+                      <option key={slug} value={slug}>
+                        {temporadaLarga(slug)}
+                        {slug === temporadaEnCurso ? " (en curso)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </div>
+            <p className="text-gray-400 text-sm mt-1">
+              {ultimaJornadaNombre
+                ? `Datos hasta la ${ultimaJornadaNombre}`
+                : `La temporada ${temporadaLarga(temporadaEfectiva)} aún no ha comenzado`}
+            </p>
           </div>
           <div className="flex items-baseline gap-2">
-            <span className="text-gray-400 text-sm">Bote total (deuda generada):</span>
+            <span className="text-gray-400 text-sm">
+              Bote {temporadaCorta(temporadaEfectiva)} (deuda generada):
+            </span>
             <span className="text-[#ff2d2d] font-mono font-bold text-lg drop-shadow-[0_0_8px_rgba(255,45,45,0.5)]">
               {boteTeorico} €
             </span>
@@ -447,7 +584,7 @@ export default function App() {
                           <tr
                             key={`${r.Jornada}-${r.Jugador}`}
                             className={
-                              r.Posicion === 17
+                              r.Deuda_Generada >= DEUDA_ALTA
                                 ? "bg-[#ff2d2d]/15 border-l-4 border-[#ff2d2d]"
                                 : "bg-[#ff8c00]/10 border-l-4 border-[#ff8c00]"
                             }
@@ -462,11 +599,15 @@ export default function App() {
                               {r.Puntos}
                             </td>
                             <td className="py-2.5 px-4 text-right font-mono font-bold">
-                              {r.Posicion === 17 ? (
-                                <span className="text-[#ff2d2d]">2 €</span>
-                              ) : (
-                                <span className="text-[#ff8c00]">1 €</span>
-                              )}
+                              <span
+                                className={
+                                  r.Deuda_Generada >= DEUDA_ALTA
+                                    ? "text-[#ff2d2d]"
+                                    : "text-[#ff8c00]"
+                                }
+                              >
+                                {r.Deuda_Generada} €
+                              </span>
                             </td>
                           </tr>
                         ))}
@@ -476,7 +617,7 @@ export default function App() {
                   <p className="p-5 text-gray-500">
                     {currentJornadaId != null
                       ? "No hay jugadores con deuda en esta jornada."
-                      : "Aún no hay datos de jornadas."}
+                      : `La temporada ${temporadaLarga(temporadaEfectiva)} aún no tiene jornadas disputadas.`}
                   </p>
                 )}
             </div>
@@ -485,7 +626,7 @@ export default function App() {
           {/* Tarjeta 2: Top Morosos */}
           <section className="bg-[#1a1a1f] border border-[#2a2a32] rounded-xl overflow-hidden shadow-lg flex flex-col h-[420px] lg:h-[480px]">
             <h2 className="px-5 py-3 text-lg font-semibold border-b border-[#2a2a32] text-[#ff2d2d] flex-shrink-0">
-              Top Morosos Históricos
+              Top Morosos {temporadaCorta(temporadaEfectiva)}
             </h2>
             <div className="overflow-x-auto overflow-y-auto min-h-0 flex-1">
                 {topMorosos.length > 0 ? (
@@ -518,7 +659,7 @@ export default function App() {
                   </table>
                 ) : (
                   <p className="p-5 text-gray-500">
-                    No hay morosos (o no hay datos aún).
+                    Aún no se conocen los participantes de esta temporada.
                   </p>
                 )}
             </div>
@@ -633,7 +774,9 @@ export default function App() {
                   </LineChart>
                 </ResponsiveContainer>
               ) : (
-                <p className="text-gray-500 flex items-center justify-center h-full">No hay datos para la gráfica.</p>
+                <p className="text-gray-500 flex items-center justify-center h-full">
+                  La temporada {temporadaLarga(temporadaEfectiva)} aún no tiene jornadas disputadas.
+                </p>
               )}
             </div>
           </section>
@@ -645,7 +788,11 @@ export default function App() {
             <h2 className="text-lg font-semibold mb-4 text-gray-200">
               Cláusulas por jugador (últimas fechas hacer/recibir)
             </h2>
-            {clausulasLoading ? (
+            {!esTemporadaEnCurso ? (
+              <p className="text-gray-500 text-sm">
+                Las cláusulas solo aplican a la temporada en curso.
+              </p>
+            ) : clausulasLoading ? (
               <p className="text-gray-500 text-sm">Cargando cláusulas…</p>
             ) : clausulasData.length === 0 ? (
               <p className="text-gray-500 text-sm">No hay datos de cláusulas o la URL no está configurada.</p>
