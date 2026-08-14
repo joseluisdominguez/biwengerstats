@@ -1,0 +1,28 @@
+// Paleta de las líneas de la gráfica. Debe superar con holgura el tamaño de la liga para
+// que ningún jugador repita color; hoy son 24 entradas para ligas de 17-18 participantes.
+export const CHART_COLORS = [
+  "#00ff88",
+  "#ff8c00",
+  "#3b82f6",
+  "#a855f7",
+  "#ec4899",
+  "#14b8a6",
+  "#eab308",
+  "#f97316",
+  "#6366f1",
+  "#84cc16",
+  "#06b6d4",
+  "#d946ef",
+  "#ef4444",
+  "#22c55e",
+  "#8b5cf6",
+  "#0ea5e9",
+  "#f43f5e",
+  "#7dd3fc",
+  "#c084fc",
+  "#fda4af",
+  "#fbbf24",
+  "#4ade80",
+  "#2dd4bf",
+  "#e879f9",
+];

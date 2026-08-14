@@ -32,6 +32,8 @@ jobs:
         env:
           VITE_CSV_HISTORIAL: ${{ secrets.VITE_CSV_HISTORIAL }}
           VITE_CSV_CLAUSULAS: ${{ secrets.VITE_CSV_CLAUSULAS }}
+          # Sin este secret la SPA no muestra ni el icono ni la vista de palmarés
+          VITE_CSV_PALMARES: ${{ secrets.VITE_CSV_PALMARES }}
         run: |
           cd frontend
           npm ci

@@ -116,3 +116,70 @@ Las cláusulas solo tienen sentido en la temporada en curso (el límite es de 2 
 días), así que la SPA oculta la tabla al consultar temporadas pasadas y no se guarda histórico.
 
 Para que la SPA muestre la tabla de cláusulas, publica esta pestaña en la web como CSV y configura en el frontend la variable de entorno **`VITE_CSV_CLAUSULAS`** con la URL (incluyendo el `gid` de la pestaña Clausulas).
+
+---
+
+## Pestaña: `Palmares`
+
+**Se rellena a mano.** El bot no la lee ni la escribe: no hay forma de sacar el histórico de
+campeones de una liga privada desde la API de Biwenger, así que los títulos se apuntan a mano.
+No hay cron ni proceso automático que la toque.
+
+| Columna    | Tipo   | Descripción                          |
+|------------|--------|--------------------------------------|
+| Jugador    | string | Nombre del jugador                   |
+| Ligas      | int    | Número de Ligas ganadas              |
+| Copas      | int    | Número de Copas ganadas              |
+| Champions  | int    | Número de Champions ganadas          |
+
+Ejemplo:
+
+```
+Jugador,Ligas,Copas,Champions
+ChochoMojao 💦,3,1,2
+Peluteam,2,2,0
+Palo Verde Fc,0,3,1
+```
+
+**La fila de cabecera es opcional**: la SPA la detecta y la descarta cuando las tres columnas de
+recuento no traen números, así que la hoja funciona la pongas o no. Una celda en blanco cuenta
+como 0 y las filas sin nombre de jugador se ignoran, de modo que las filas residuales que deja
+editar a mano no molestan.
+
+### Cómo se muestra
+
+La SPA la presenta en una vista propia (icono de medalla en la cabecera, URL `?vista=palmares`)
+con **tres clasificaciones independientes**, una por trofeo. Cada una:
+
+- ordena de más a menos títulos **de esa columna**;
+- rompe los empates por **orden alfabético**, y los empatados comparten posición, de forma que
+  tras dos primeros el siguiente es tercero;
+- **oculta a quien tenga 0 títulos en ese trofeo**, aunque tenga títulos en los otros dos.
+
+> **El orden de las filas de la hoja no influye en lo que se ve.** Ordénala como te resulte
+> cómodo para rellenarla; la aplicación reordena cada bloque por su cuenta.
+
+El palmarés es histórico y **no depende de la temporada seleccionada**: no cambia al usar el
+selector, y por eso su vista no muestra ni el selector ni el bote.
+
+Para que aparezca, publica la pestaña en la web como CSV y configura **`VITE_CSV_PALMARES`** con
+la URL (incluyendo su `gid`). Sin esa variable no se muestra ni el icono ni la vista, y el resto
+de la aplicación funciona igual.
+
+---
+
+## Variables del frontend
+
+Las tres URL de CSV que consume la SPA:
+
+| Variable              | Pestaña             | Origen           | Obligatoria |
+|-----------------------|---------------------|------------------|-------------|
+| `VITE_CSV_HISTORIAL`  | Historial_Jornadas  | bot (cron)       | Sí          |
+| `VITE_CSV_CLAUSULAS`  | Clausulas           | bot (cron)       | No          |
+| `VITE_CSV_PALMARES`   | Palmares            | manual           | No          |
+
+En local van en `frontend/.env` (copia de `frontend/.env.example`). **En producción no salen de
+`frontend/.env.production`** —está en `.gitignore` y no se versiona— sino de **secrets del
+repositorio** que `.github/workflows/deploy-pages.yml` inyecta en el paso de build. Al añadir una
+variable nueva hacen falta las dos mitades: crear el secret y añadirlo al bloque `env:` del
+workflow.
