@@ -1,25 +1,47 @@
-// Los tres trofeos, en el orden en que se presentan. La clave es también el nombre de la
-// columna en la pestaña Palmares del Sheet.
-export const TROFEOS = ["Ligas", "Copas", "Champions"];
+// Los tres trofeos, en el orden en que se presentan (la Champions en medio). La clave es
+// también el nombre de la columna en la pestaña Palmares del Sheet; el CSV sigue llegando
+// como siempre (Jugador, Ligas, Copas, Champions), reordenar aquí solo cambia la vista.
+export const TROFEOS = ["Ligas", "Champions", "Copas"];
 
 /**
- * Clasificación de un trofeo: más títulos primero y, a igualdad, por orden alfabético.
+ * Ordena una lista de { Jugador, titulos } de más títulos a menos y, a igualdad, por orden
+ * alfabético. Quien no suma nada queda fuera.
  *
- * El orden de las filas de la hoja no influye. Quien no haya ganado nada en ese trofeo no
- * aparece en su clasificación, aunque tenga títulos en los otros dos.
- *
- * Los empatados comparten posición y el siguiente salta el hueco (1, 1, 3): numerarlos
- * correlativos inventaría una jerarquía que los datos no contienen.
+ * El orden de las filas de la hoja no influye. Los empatados comparten posición y el siguiente
+ * salta el hueco (1, 1, 3): numerarlos correlativos inventaría una jerarquía que los datos no
+ * contienen.
  */
-export function clasificacion(palmares, trofeo) {
-  const ordenados = palmares
-    .filter((fila) => fila[trofeo] > 0)
-    .sort((a, b) => b[trofeo] - a[trofeo] || a.Jugador.localeCompare(b.Jugador));
+function rankear(filas) {
+  const ordenados = filas
+    .filter((fila) => fila.titulos > 0)
+    .sort((a, b) => b.titulos - a.titulos || a.Jugador.localeCompare(b.Jugador));
 
   return ordenados.map((fila) => ({
     Jugador: fila.Jugador,
-    titulos: fila[trofeo],
+    titulos: fila.titulos,
     // La lista está ordenada, así que el primero con estos títulos marca la posición del grupo
-    posicion: ordenados.findIndex((f) => f[trofeo] === fila[trofeo]) + 1,
+    posicion: ordenados.findIndex((f) => f.titulos === fila.titulos) + 1,
   }));
+}
+
+/**
+ * Clasificación de un trofeo concreto. Quien no lo haya ganado no aparece en su clasificación,
+ * aunque tenga títulos en los otros dos.
+ */
+export function clasificacion(palmares, trofeo) {
+  return rankear(
+    palmares.map((fila) => ({ Jugador: fila.Jugador, titulos: fila[trofeo] }))
+  );
+}
+
+/**
+ * Clasificación general: suma de los tres trofeos por jugador, del que más acumula al que menos.
+ */
+export function clasificacionTotal(palmares) {
+  return rankear(
+    palmares.map((fila) => ({
+      Jugador: fila.Jugador,
+      titulos: TROFEOS.reduce((suma, trofeo) => suma + fila[trofeo], 0),
+    }))
+  );
 }

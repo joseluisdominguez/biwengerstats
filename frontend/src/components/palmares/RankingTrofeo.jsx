@@ -32,7 +32,7 @@ export default function RankingTrofeo({ titulo, acento, filas }) {
         <span style={{ color: acento }}>{titulo}</span>
         {filas.length > 0 && (
           <span className="ml-auto text-xs font-normal text-gray-500 font-mono">
-            {filas.length}
+            {filas.reduce((suma, fila) => suma + fila.titulos, 0)}
           </span>
         )}
       </h2>

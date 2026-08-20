@@ -1,12 +1,15 @@
-import { clasificacion, TROFEOS } from "../../lib/palmares";
+import { clasificacion, clasificacionTotal, TROFEOS } from "../../lib/palmares";
 import RankingTrofeo from "./RankingTrofeo";
 
 // Color propio por trofeo, para que cada clasificación se distinga de un vistazo.
 const ACENTO = {
   Ligas: "#ffd700",
-  Copas: "#ff8c00",
   Champions: "#00d4ff",
+  Copas: "#ff8c00",
 };
+
+// La clasificación general (suma de los tres) lleva su propio acento para no confundirla.
+const ACENTO_TOTAL = "#b388ff";
 
 export default function Palmares({ palmares, loading, error }) {
   if (loading) {
@@ -37,7 +40,7 @@ export default function Palmares({ palmares, loading, error }) {
         Títulos acumulados de todas las temporadas. Quien no ha ganado un trofeo no aparece en
         su clasificación.
       </p>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-start">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 items-start">
         {TROFEOS.map((trofeo) => (
           <RankingTrofeo
             key={trofeo}
@@ -46,6 +49,11 @@ export default function Palmares({ palmares, loading, error }) {
             filas={clasificacion(palmares, trofeo)}
           />
         ))}
+        <RankingTrofeo
+          titulo="Total"
+          acento={ACENTO_TOTAL}
+          filas={clasificacionTotal(palmares)}
+        />
       </div>
     </>
   );
