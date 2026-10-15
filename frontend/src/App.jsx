@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  CSV_CAGAITAS,
   CSV_CLAUSULAS,
   CSV_HISTORIAL,
   CSV_PALMARES,
   TEMPORADA_POR_DEFECTO,
   csvConfigurado,
 } from "./config";
-import { fetchClausulas, fetchHistorial, fetchPalmares } from "./lib/csv";
+import { fetchCagaitas, fetchClausulas, fetchHistorial, fetchPalmares } from "./lib/csv";
+import { cagaitasDeTemporada } from "./lib/cagaitas";
 import { PARAM_TEMPORADA, PARAM_VISTA, VISTA_PALMARES } from "./lib/url";
 import { temporadaCorta } from "./lib/temporada";
 import { useUrlParam } from "./hooks/useUrlState";
@@ -20,6 +22,7 @@ import Palmares from "./components/palmares/Palmares";
 
 const HAY_CLAUSULAS = csvConfigurado(CSV_CLAUSULAS);
 const HAY_PALMARES = csvConfigurado(CSV_PALMARES);
+const HAY_CAGAITAS = csvConfigurado(CSV_CAGAITAS);
 
 export default function App() {
   const [historial, setHistorial] = useState([]);
@@ -50,6 +53,19 @@ export default function App() {
       .then((data) => setPalmares(Array.isArray(data) ? data : []))
       .catch((err) => setPalmaresError(err.message));
   }, [enPalmares]);
+
+  // Las cagaitas se ven en la home, así que se piden al arrancar, pero en paralelo y fuera del
+  // estado de carga del historial: la home no las espera y las marcas aparecen cuando llegan.
+  // `null` = todavía sin cargar, igual que el palmarés.
+  const [cagaitas, setCagaitas] = useState(null);
+  const [cagaitasError, setCagaitasError] = useState(null);
+
+  useEffect(() => {
+    if (!HAY_CAGAITAS) return;
+    fetchCagaitas(CSV_CAGAITAS)
+      .then((data) => setCagaitas(Array.isArray(data) ? data : []))
+      .catch((err) => setCagaitasError(err.message));
+  }, []);
 
   useEffect(() => {
     fetchHistorial(CSV_HISTORIAL)
@@ -212,6 +228,13 @@ export default function App() {
       );
   }, [rosterTemporada, porJugador]);
 
+  // Se cruzan con el mismo roster que pinta Top Morosos, así una marca nunca apunta a una
+  // fila que no está en la tabla.
+  const cagaitasTemporada = useMemo(
+    () => cagaitasDeTemporada(cagaitas ?? [], temporadaEfectiva, rosterTemporada),
+    [cagaitas, temporadaEfectiva, rosterTemporada]
+  );
+
   const boteTeorico = useMemo(
     () => normalizedHistorial.reduce((s, r) => s + r.Deuda_Generada, 0),
     [normalizedHistorial]
@@ -302,7 +325,13 @@ export default function App() {
             onSiguiente={() => setCurrentJornadaIndex(effectiveJornadaIndex + 1)}
             onElegirJornada={() => setShowJornadaModal(true)}
           />
-          <TopMorosos topMorosos={topMorosos} temporadaEfectiva={temporadaEfectiva} />
+          <TopMorosos
+            key={temporadaEfectiva}
+            topMorosos={topMorosos}
+            temporadaEfectiva={temporadaEfectiva}
+            cagaitas={HAY_CAGAITAS ? cagaitasTemporada : null}
+            cagaitasError={cagaitasError}
+          />
         </div>
 
         {/* Modal: elegir jornada (fuera del grid para overlay) */}

@@ -16,6 +16,9 @@ export const CSV_CLAUSULAS = import.meta.env.VITE_CSV_CLAUSULAS || "";
 // Palmares (opcional): pestaña manual. Columnas: Jugador, Ligas, Copas, Champions
 export const CSV_PALMARES = import.meta.env.VITE_CSV_PALMARES || "";
 
+// Cagaitas (opcional): pestaña manual. Columnas: Temporada, Jugador, Fecha, Futbolista
+export const CSV_CAGAITAS = import.meta.env.VITE_CSV_CAGAITAS || "";
+
 /** Una URL de CSV cuenta como configurada si existe y no conserva el marcador de ejemplo. */
 export function csvConfigurado(url) {
   return Boolean(url) && !url.includes(MARCADOR_EJEMPLO);

@@ -168,15 +168,73 @@ de la aplicación funciona igual.
 
 ---
 
+## Pestaña: `Cagaitas`
+
+**Se rellena a mano.** Una cagaita es el perdón de una venta al mercado hecha sin querer (dormido,
+baile de dedo…): **una por participante y temporada**. La API de Biwenger no puede saber si una
+venta fue un error, así que el bot ni la lee ni la escribe.
+
+Una fila por cagaita:
+
+| Columna    | Tipo   | Obligatoria | Descripción                                         |
+|------------|--------|-------------|-----------------------------------------------------|
+| Temporada  | string | Sí          | `2026-2027` o `2026/2027`; las dos valen            |
+| Jugador    | string | Sí          | Nombre del participante, **tal como sale en la app** |
+| Fecha      | string | No          | Se muestra tal cual la escribas                     |
+| Futbolista | string | No          | Futbolista que vendió sin querer                    |
+
+Ejemplo:
+
+```
+Temporada,Jugador,Fecha,Futbolista
+2026-2027,Peluteam,12/10/2026,Pedri
+2026-2027,Palo Verde Fc,,Lewandowski
+```
+
+**La fila de cabecera es opcional**: cualquier fila cuya columna `Temporada` no sea una temporada
+se descarta, y eso incluye la cabecera y las filas residuales de editar a mano. También se
+descartan las filas sin jugador.
+
+### El nombre del jugador
+
+Se empareja con los participantes de esa temporada **ignorando mayúsculas y espacios en los
+extremos, y nada más**. Ojo con los equipos que cambian de nombre entre temporadas
+(`ChochoMojao 💦` en 2025-2026 es `ChochoQuemao 🔥` en 2026-2027) y con los emojis: lo más seguro
+es copiar el nombre desde la propia aplicación o desde `Historial_Jornadas`.
+
+Si un nombre no coincide con nadie, no se pierde sin aviso: el pie de Top Morosos lo muestra en
+naranja como **"Sin asignar"**. Corrige el nombre en la hoja y el aviso desaparece.
+
+### Cómo se muestra
+
+- Un **💩 junto al nombre en Top Morosos** de quien ya la ha usado en la temporada seleccionada.
+  Al tocarlo (o pasar el ratón por encima) se ve la fecha y el futbolista. No cambia ni el orden
+  ni los importes de la tabla.
+- Un **pie discreto** en Top Morosos con cuántos la han usado ("2 de 18"). Solo aparece si la
+  temporada tiene alguna cagaita.
+- Sigue al selector de temporada: cada temporada muestra solo las suyas.
+
+> **La aplicación no impone la norma.** Si alguien aparece dos veces en la misma temporada, se
+> muestra con un solo 💩 y el detalle lista las dos. Que se cumpla la regla es cosa de la liga.
+
+Google cachea los CSV publicados unos minutos, así que una cagaita recién apuntada puede tardar
+un poco en verse.
+
+Para que aparezca, publica la pestaña en la web como CSV y configura **`VITE_CSV_CAGAITAS`** con
+la URL (incluyendo su `gid`). Sin esa variable Top Morosos se queda exactamente como antes.
+
+---
+
 ## Variables del frontend
 
-Las tres URL de CSV que consume la SPA:
+Las cuatro URL de CSV que consume la SPA:
 
 | Variable              | Pestaña             | Origen           | Obligatoria |
 |-----------------------|---------------------|------------------|-------------|
 | `VITE_CSV_HISTORIAL`  | Historial_Jornadas  | bot (cron)       | Sí          |
 | `VITE_CSV_CLAUSULAS`  | Clausulas           | bot (cron)       | No          |
 | `VITE_CSV_PALMARES`   | Palmares            | manual           | No          |
+| `VITE_CSV_CAGAITAS`   | Cagaitas            | manual           | No          |
 
 En local van en `frontend/.env` (copia de `frontend/.env.example`). **En producción no salen de
 `frontend/.env.production`** —está en `.gitignore` y no se versiona— sino de **secrets del

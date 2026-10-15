@@ -1,5 +1,6 @@
 import Papa from "papaparse";
 import { CLAUSULAS_LABEL_TEMPORADA, TEMPORADA_POR_DEFECTO } from "../config";
+import { normalizarTemporada } from "./temporada";
 
 export function parseNum(val) {
   if (val === "" || val == null) return 0;
@@ -9,7 +10,11 @@ export function parseNum(val) {
 
 function descargarFilas(url, opciones) {
   return fetch(url)
-    .then((r) => r.text())
+    .then((r) => {
+      // Sin esto, la página de error de Google se parsearía como si fuera el CSV
+      if (!r.ok) throw new Error(`No se pudo descargar el CSV (HTTP ${r.status})`);
+      return r.text();
+    })
     .then((text) => Papa.parse(text, { header: false, ...opciones }).data || []);
 }
 
@@ -79,6 +84,27 @@ export function fetchPalmares(url) {
         Champions: parseNum(row[3]),
       }));
   });
+}
+
+/**
+ * Cagaitas. Pestaña manual, una fila por cagaita: Temporada, Jugador, Fecha, Futbolista.
+ *
+ * No hace falta detectar la cabecera: una fila sin temporada reconocible se descarta, y eso
+ * se lleva por delante tanto la fila de títulos como los restos de editar la hoja a mano.
+ * Fecha y Futbolista son opcionales y se guardan como texto, tal como están escritos.
+ */
+export function fetchCagaitas(url) {
+  return descargarFilas(url, { skipEmptyLines: true }).then((rows) =>
+    rows
+      .filter(Array.isArray)
+      .map((row) => ({
+        Temporada: normalizarTemporada(row[0]),
+        Jugador: String(row[1] ?? "").trim(),
+        Fecha: String(row[2] ?? "").trim(),
+        Futbolista: String(row[3] ?? "").trim(),
+      }))
+      .filter((cagaita) => cagaita.Temporada && cagaita.Jugador)
+  );
 }
 
 /**

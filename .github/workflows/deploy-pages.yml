@@ -34,6 +34,8 @@ jobs:
           VITE_CSV_CLAUSULAS: ${{ secrets.VITE_CSV_CLAUSULAS }}
           # Sin este secret la SPA no muestra ni el icono ni la vista de palmarés
           VITE_CSV_PALMARES: ${{ secrets.VITE_CSV_PALMARES }}
+          # Sin este secret Top Morosos no muestra ni marcas ni leyenda de cagaitas
+          VITE_CSV_CAGAITAS: ${{ secrets.VITE_CSV_CAGAITAS }}
         run: |
           cd frontend
           npm ci
