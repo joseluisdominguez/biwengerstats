@@ -56,4 +56,4 @@ Playwright contra el servidor de desarrollo y el Sheet de test (17 comprobacione
 - [x] 7.1 Documentar la pestaña `Cagaitas` en `GOOGLE_SHEET_ESTRUCTURA.md`: columnas, mantenimiento manual, formatos de temporada aceptados, que el nombre debe copiarse como aparece en la aplicación y que la norma de una por temporada no la impone la aplicación
 - [x] 7.2 Añadir `VITE_CSV_CAGAITAS` a la tabla de variables del frontend en esa misma guía
 - [x] 7.3 Añadir `VITE_CSV_CAGAITAS` al bloque `env:` del paso de build en `.github/workflows/deploy-pages.yml`
-- [ ] 7.4 Pendiente de ti: crear el secret `VITE_CSV_CAGAITAS` en el repositorio y comprobar tras el despliegue que la URL llega al bundle de producción
+- [x] 7.4 Pendiente de ti: crear el secret `VITE_CSV_CAGAITAS` en el repositorio y comprobar tras el despliegue que la URL llega al bundle de producción — bundle `index-Dxy5Nko5.js` con las cuatro URL (`gid=0`, `gid=924007710`, `gid=543593971`, `gid=1382368562`); la de cagaitas devuelve la pestaña de producción con `ChochoQuemao 🔥`. Probado en GitHub Pages y dado por bueno
